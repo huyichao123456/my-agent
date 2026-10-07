@@ -14,33 +14,14 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-if "HF_TOKEN" in st.secrets:
-    os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
-    # 顺便加上镜像加速，确保云端下载模型飞快
-    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-
-# ================= 1. 页面基础设置 =================
+# ================= 0. 页面基础设置 =================
 st.set_page_config(page_title="我的第一个AI Agent", layout="wide")
 st.title("🤖 我的专属企业助手")
 
-st.sidebar.header("📁 知识库管理")
-uploaded_file = st.sidebar.file_uploader("上传公司文档 (TXT)", type=["txt"])
-
-if uploaded_file is not None:
-    if st.sidebar.button("向量化并入库"):
-        text_content = uploaded_file.read().decode("utf-8")
-        
-        # 把长文档切分成小块（非常重要，模型一次吃不下一整本书）
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=200,      # 每块大约200字
-            chunk_overlap=50,    # 块与块之间有50字的重复，保证语义连贯
-            separators=["\n\n", "\n", "。", "！", "？", "，", " "]
-        )
-        new_docs = [Document(page_content=chunk) for chunk in text_splitter.split_text(text_content)]
-        
-        with st.spinner("正在把新文档写入向量库..."):
-            vectorstore.add_documents(new_docs)
-            st.sidebar.success(f"成功写入 {len(new_docs)} 个文本片段！现在可以提问了！")
+# ================= 1. 读取安全密钥 =================
+if "HF_TOKEN" in st.secrets:
+    os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
+    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 try:
     QWEATHER_KEY = st.secrets["QWEATHER_KEY"]
@@ -51,7 +32,7 @@ except Exception:
     st.error("⚠️ 未检测到密钥配置！请确保在本地或 Streamlit Cloud 中配置了 secrets.toml")
     st.stop()
 
-# ================= 3. 初始化向量模型与知识库 (带缓存) =================
+# ================= 2. 初始化向量模型与知识库 (带缓存) =================
 @st.cache_resource(show_spinner=False)
 def load_vector_store():
     print("   [系统提示：正在加载向量模型，首次较慢，以后会自动缓存...]")
@@ -68,8 +49,7 @@ def load_vector_store():
 vectorstore = load_vector_store()
 retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
 
-# ================= 4. 初始化大模型 =================
-# 强烈建议换成 deepseek-chat，把 base_url 换成 https://api.deepseek.com
+# ================= 3. 初始化大模型 =================
 llm = ChatOpenAI(
     api_key=LLM_API_KEY,
     base_url=LLM_BASE_URL, 
@@ -77,7 +57,7 @@ llm = ChatOpenAI(
     temperature=0.7
 )
 
-# ================= 5. 定义基础工具 =================
+# ================= 4. 定义基础工具 =================
 @tool
 def get_weather(city: str) -> str:
     """获取指定城市的今日真实天气信息。参数 city 是城市名称，例如：广州、北京。"""
@@ -113,9 +93,9 @@ def search_knowledge(query: str) -> str:
         return "找到以下相关信息：\n" + "\n".join([doc.page_content for doc in results])
     return "抱歉，本地知识库中没有找到相关信息。"
 
-# ================= 6. 多智能体定义 (Agent as a Tool) =================
+# ================= 5. 多智能体定义 (Agent as a Tool) =================
 
-# 6.1 构造子智能体的提示词
+# 5.1 构造子智能体的提示词
 hr_prompt = ChatPromptTemplate.from_messages([
     ("system", "你是一个严谨的HR专员。请根据工具返回的知识库结果回答问题，绝对不许编造。"),
     ("human", "{input}"),
@@ -128,14 +108,14 @@ weather_prompt = ChatPromptTemplate.from_messages([
     MessagesPlaceholder(variable_name="agent_scratchpad"),
 ])
 
-# 6.2 创建子 Agent（专员）
+# 5.2 创建子 Agent（专员）
 hr_agent = create_tool_calling_agent(llm, [search_knowledge], hr_prompt)
 hr_executor = AgentExecutor(agent=hr_agent, tools=[search_knowledge], verbose=False)
 
 weather_agent = create_tool_calling_agent(llm, [get_weather], weather_prompt)
 weather_executor = AgentExecutor(agent=weather_agent, tools=[get_weather], verbose=False)
 
-# 6.3 将子 Agent 包装成“总管家”可以调用的“工具”
+# 5.3 将子 Agent 包装成“总管家”可以调用的“工具”
 @tool
 def ask_hr_expert(query: str) -> str:
     """当用户询问公司制度、薪资、考勤、年假、报销等内部政策时，调用此工具。"""
@@ -148,10 +128,10 @@ def ask_weather_expert(query: str) -> str:
     print(f"   [总管家正在呼叫气象专员，参数：{query}]")
     return weather_executor.invoke({"input": query})["output"]
 
-# 6.4 总管家的工具列表
+# 5.4 总管家的工具列表
 tools = [ask_hr_expert, ask_weather_expert]
 
-# ================= 7. 构建总管家 Agent =================
+# ================= 6. 构建总管家 Agent =================
 prompt = ChatPromptTemplate.from_messages([
     ("system", """你是一个公司的总管家。你的任务是分析用户的问题，并决定调用哪个专员来解决问题。
     如果涉及公司内部制度，调用 ask_hr_expert。
@@ -171,7 +151,7 @@ prompt = ChatPromptTemplate.from_messages([
 agent = create_tool_calling_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
 
-# ================= 8. 记忆系统 (SQLite 持久化) =================
+# ================= 7. 记忆系统 (SQLite 持久化) =================
 def get_session_history(session_id: str):
     return SQLChatMessageHistory(
         session_id=session_id, 
@@ -185,48 +165,43 @@ agent_with_memory = RunnableWithMessageHistory(
     history_messages_key="chat_history",
 )
 
-# ================= 9. Streamlit 网页交互 =================
+# ================= 8. Streamlit 网页交互 =================
 
-# 初始化问候语（只在数据库为空时显示一次）
+# 8.1 渲染历史聊天记录
 if "initialized" not in st.session_state:
     history = get_session_history("any")
     if len(history.messages) == 0:
         history.add_ai_message("你好！我是你的公司助手。你可以问我天气、时间，或者公司考勤制度。")
     st.session_state.initialized = True
 
-# 渲染历史聊天记录
 history = get_session_history("any")
 for msg in history.messages:
     st.chat_message("human" if msg.type == "human" else "ai").write(msg.content)
 
-st.sidebar.header("📁 知识库管理")
-uploaded_file = st.sidebar.file_uploader("上传你的公司文档 (TXT)", type=["txt"])
-
-if uploaded_file is not None:
-    if st.sidebar.button("向量化并入库"):
-        # 读取上传的文件
-        text_content = uploaded_file.read().decode("utf-8")
-        # 切分成段落
-        new_docs = [Document(page_content=line) for line in text_content.split('\n') if line.strip()]
-        
-        with st.spinner("正在把新文档写入向量库..."):
-            # 把你的全局 vectorstore 写进去（注意：这里要在全局声明变量）
-            vectorstore.add_documents(new_docs)
-            st.sidebar.success("写入成功！现在可以提问了！")
-            st.rerun()
-
-# 在网页顶部 st.title 附近加
+# 8.2 侧边栏：知识库管理（只保留这一处！）
 with st.sidebar:
+    st.header("📁 知识库管理")
+    uploaded_file = st.sidebar.file_uploader("上传你的公司文档 (TXT)", type=["txt"])
+
+    if uploaded_file is not None:
+        if st.sidebar.button("向量化并入库"):
+            text_content = uploaded_file.read().decode("utf-8")
+            # 切分成段落
+            new_docs = [Document(page_content=line) for line in text_content.split('\n') if line.strip()]
+            
+            with st.spinner("正在把新文档写入向量库..."):
+                vectorstore.add_documents(new_docs)
+                st.sidebar.success("写入成功！现在可以提问了！")
+                st.rerun()
+
     st.header("设置")
     if st.button("🧹 清除聊天记录"):
-        # 直接删除数据库文件（本地）或重置 session（云端）
-        import os
         if os.path.exists("chat_history.db"):
             os.remove("chat_history.db")
         st.session_state.initialized = False
         st.rerun()
 
-# 输入框与响应逻辑
+# 8.3 输入框与响应逻辑
 if prompt_text := st.chat_input("请输入你的问题..."):
     st.chat_message("human").write(prompt_text)
     
@@ -241,7 +216,7 @@ if prompt_text := st.chat_input("请输入你的问题..."):
         st.write("✅ 所有专员均已反馈完毕！")
         status.update(label="处理完成！", state="complete", expanded=False)
     
-    # 👇 防断片兜底逻辑
+    # 防断片兜底逻辑
     ai_reply = response.get("output", "").strip()
     if not ai_reply:
         ai_reply = "抱歉，我刚刚走神了，没有思考出结果。您可以换个问法，或者问我天气和公司制度相关的任务！"
