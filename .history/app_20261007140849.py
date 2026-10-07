@@ -3,11 +3,6 @@ import datetime
 import requests
 import time
 import os
-import warnings
-
-# 屏蔽烦人的 LangChain 弃用警告
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -52,19 +47,13 @@ def load_vector_store():
     return vectorstore
 
 vectorstore = load_vector_store()
-
-# 🚀 优化：使用 MMR 算法去重，增加召回数量，提升复杂表格文档的命中率
-retriever = vectorstore.as_retriever(
-    search_type="mmr", 
-    search_kwargs={"k": 5, "fetch_k": 10}
-)
+retriever = vectorstore.as_retriever(search_kwargs={"k": 3}) # 稍微提高检索数量，便于从上传的长文档中找答案
 
 # ================= 3. 初始化大模型 =================
-# ⚠️ 如果你有 DeepSeek 的 Key，强烈建议替换下方的配置
 llm = ChatOpenAI(
     api_key=LLM_API_KEY,
     base_url=LLM_BASE_URL, 
-    model="agnes-2.5-flash", 
+    model="agnes-2.5-flash", # 如果换 DeepSeek，改成 "deepseek-chat"
     temperature=0.7
 )
 
@@ -98,19 +87,17 @@ def get_current_time() -> str:
 
 @tool
 def search_knowledge(query: str) -> str:
-    """当用户询问公司内部制度、考勤、薪资、休假，或者询问具体的业务规范、表格数据、流程标准（如汽车销售考核标准、竞品分析等）时，使用此工具检索内部知识库。"""
+    """当用户询问公司内部制度、考勤、薪资、休假，或者询问“我上传的文件”时，使用此工具检索内部知识库。"""
     results = retriever.invoke(query)
     if results:
-        # 提取检索到的前5个片段拼接返回
-        content_list = [doc.page_content for doc in results]
-        return "找到以下相关信息：\n" + "\n---\n".join(content_list)
+        return "找到以下相关信息：\n" + "\n".join([doc.page_content for doc in results])
     return "抱歉，本地知识库中没有找到相关信息。"
 
 # ================= 5. 多智能体定义 (Agent as a Tool) =================
 
 # 5.1 构造子智能体的提示词
 hr_prompt = ChatPromptTemplate.from_messages([
-    ("system", "你是一个严谨的HR及业务专员。请严格根据工具返回的知识库结果回答问题，绝对不许编造。如果检索结果中确实没有相关内容，请如实告知，并列出可能相关的检索片段。"),
+    ("system", "你是一个严谨的HR专员。请根据工具返回的知识库结果回答问题，绝对不许编造。如果检索结果与问题无关，请如实告知。"),
     ("human", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
 ])
@@ -131,7 +118,7 @@ weather_executor = AgentExecutor(agent=weather_agent, tools=[get_weather], verbo
 # 5.3 将子 Agent 包装成“总管家”可以调用的“工具”
 @tool
 def ask_hr_expert(query: str) -> str:
-    """当用户询问公司制度、业务规范、表格数据、具体车型信息、考核标准、薪资考勤等问题时，调用此工具。"""
+    """当用户询问公司制度、薪资、考勤、年假、报销，或者提问关于“我上传的文件”、“知识库”等问题时，调用此工具。"""
     print(f"   [总管家正在呼叫HR专员，参数：{query}]")
     return hr_executor.invoke({"input": query})["output"]
 
@@ -147,15 +134,15 @@ tools = [ask_hr_expert, ask_weather_expert]
 # ================= 6. 构建总管家 Agent =================
 prompt = ChatPromptTemplate.from_messages([
     ("system", """你是一个公司的总管家。你的任务是分析用户的问题，并决定调用哪个专员来解决问题。
+    如果涉及公司内部制度、考勤、薪资、休假，或者用户询问关于“我上传的文件”、“知识库”等内容，一律调用 ask_hr_expert。
+    如果涉及天气，调用 ask_weather_expert。
+    如果涉及时间，你可以直接回答或者礼貌告知无法查询。
     
-    ⚠️ 规则：
-    1. 如果涉及公司内部制度、业务规范、表格数据、具体车型信息、考核标准，或者用户询问“我上传的文件”、“知识库”等具体业务内容，**必须强制调用 `ask_hr_expert` 进行检索**。
-    2. 如果涉及天气，调用 `ask_weather_expert`。
-    3. 如果用户只是打招呼或明确闲聊，你可以直接礼貌回答。
-    4. 遇到不确定或听不懂的问题，**宁可调用 ask_hr_expert 检索，绝对不允许直接回复“问题模糊”或“无法读取文件”！**
-    5. 同一个专员，在一次回复中只能调用一次！
-
-    最后，根据专员检索到的实际内容，平滑、礼貌地总结给用户。"""),
+    ⚠️ 极其重要的规则：
+    1. 同一个专员，在一次回复中只能调用一次！绝对不允许为了同样的问题重复呼叫同一个专员！
+    2. 如果用户问的问题（比如“我是谁”、打招呼、闲聊）不需要用到这两个专员，请你自己直接礼貌地回答，绝对不允许返回空内容！
+    
+    最后，把专员返回的结果，平滑、礼貌地总结给用户。"""),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -184,7 +171,7 @@ agent_with_memory = RunnableWithMessageHistory(
 if "initialized" not in st.session_state:
     history = get_session_history("any")
     if len(history.messages) == 0:
-        history.add_ai_message("你好！我是你的公司助手。你可以问我天气、时间，或者上传文件后向我提问业务知识。")
+        history.add_ai_message("你好！我是你的公司助手。你可以问我天气、时间，或者公司考勤制度。")
     st.session_state.initialized = True
 
 history = get_session_history("any")
@@ -202,7 +189,7 @@ with st.sidebar:
                 # 1. 尝试用 UTF-8 读取
                 text_content = uploaded_file.read().decode("utf-8")
             except UnicodeDecodeError:
-                # 2. 失败则尝试 GBK（兼容大多数中文 Windows 文件）
+                # 2. 失败则尝试 GBK
                 uploaded_file.seek(0)
                 try:
                     text_content = uploaded_file.read().decode("gbk")
@@ -210,10 +197,10 @@ with st.sidebar:
                     st.sidebar.error(f"读取文件失败，请确保是纯文本txt文件。错误：{e}")
                     st.stop()
             
-            # 3. 智能切分（针对你上传的复杂表格文档，调整了切分参数）
+            # 3. 使用 RecursiveCharacterTextSplitter 智能切分（替换原来的简单按行切分）
             text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=350,      # 每块约350字
-                chunk_overlap=80,    # 重叠80字，保持语义连贯
+                chunk_size=400,      # 每块约400字
+                chunk_overlap=50,    # 重叠50字，保持语义连贯
                 separators=["\n\n", "\n", "。", "！", "？", "，", " ", ""]
             )
             new_docs = [Document(page_content=chunk) for chunk in text_splitter.split_text(text_content)]
