@@ -5,7 +5,7 @@ import time
 import os
 import warnings
 
-# 屏蔽烦人的 LangChain 弃用警告
+# 屏蔽 LangChain 的弃用警告
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from langchain_openai import ChatOpenAI
@@ -53,14 +53,14 @@ def load_vector_store():
 
 vectorstore = load_vector_store()
 
-# 🚀 优化：使用 MMR 算法去重，增加召回数量，提升复杂表格文档的命中率
+# 🚀 优化：MMR检索，防止检索到重复内容，同时增加检索命中率
 retriever = vectorstore.as_retriever(
     search_type="mmr", 
     search_kwargs={"k": 5, "fetch_k": 10}
 )
 
 # ================= 3. 初始化大模型 =================
-# ⚠️ 如果你有 DeepSeek 的 Key，强烈建议替换下方的配置
+# ⚠️ 强烈建议换成 DeepSeek：model="deepseek-chat", base_url="https://api.deepseek.com"
 llm = ChatOpenAI(
     api_key=LLM_API_KEY,
     base_url=LLM_BASE_URL, 
@@ -98,19 +98,23 @@ def get_current_time() -> str:
 
 @tool
 def search_knowledge(query: str) -> str:
-    """当用户询问公司内部制度、考勤、薪资、休假，或者询问具体的业务规范、表格数据、流程标准（如汽车销售考核标准、竞品分析等）时，使用此工具检索内部知识库。"""
+    """当用户询问公司内部制度、业务规范、表格数据、具体车型信息、考核标准、薪资考勤等问题时，使用此工具检索内部知识库。"""
     results = retriever.invoke(query)
     if results:
-        # 提取检索到的前5个片段拼接返回
         content_list = [doc.page_content for doc in results]
-        return "找到以下相关信息：\n" + "\n---\n".join(content_list)
+        return "找到以下相关信息：\n---\n" + "\n---\n".join(content_list)
     return "抱歉，本地知识库中没有找到相关信息。"
 
 # ================= 5. 多智能体定义 (Agent as a Tool) =================
 
-# 5.1 构造子智能体的提示词
+# 5.1 构造子智能体的提示词（强化“照抄原文”，避免大模型自作聪明）
 hr_prompt = ChatPromptTemplate.from_messages([
-    ("system", "你是一个严谨的HR及业务专员。请严格根据工具返回的知识库结果回答问题，绝对不许编造。如果检索结果中确实没有相关内容，请如实告知，并列出可能相关的检索片段。"),
+    ("system", """你是一个严谨的业务及HR专员。你的唯一任务是从工具返回的知识库片段中提取答案。
+    ⚠️ 铁律：
+    1. 绝对不许编造！绝对不许使用你自己的通用知识去“推测”、“补充”或“提建议”！
+    2. 如果知识库片段里找到了相关内容，请一字不差地引用原文来回答（比如直接输出：“最科技最安全的全球纯电平台，远超百倍国标安全要求”）。
+    3. 如果知识库片段里确实没有相关词句，请直接回答：“抱歉，知识库中未收录该信息。”严禁给出“通用逻辑”或“行业常规”！
+    """),
     ("human", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
 ])
@@ -151,8 +155,8 @@ prompt = ChatPromptTemplate.from_messages([
     ⚠️ 规则：
     1. 如果涉及公司内部制度、业务规范、表格数据、具体车型信息、考核标准，或者用户询问“我上传的文件”、“知识库”等具体业务内容，**必须强制调用 `ask_hr_expert` 进行检索**。
     2. 如果涉及天气，调用 `ask_weather_expert`。
-    3. 如果用户只是打招呼或明确闲聊，你可以直接礼貌回答。
-    4. 遇到不确定或听不懂的问题，**宁可调用 ask_hr_expert 检索，绝对不允许直接回复“问题模糊”或“无法读取文件”！**
+    3. 遇到不确定或听不懂的问题，**宁可调用 ask_hr_expert 检索，绝对不允许直接回复“问题模糊”或“无法读取文件”！**
+    4. 调用 `ask_hr_expert` 时，请**直接传入用户的原始提问**，不要随意改写或删减关键词，以免丢失“开口必说话术”这种核心检索词！
     5. 同一个专员，在一次回复中只能调用一次！
 
     最后，根据专员检索到的实际内容，平滑、礼貌地总结给用户。"""),
@@ -199,10 +203,8 @@ with st.sidebar:
     if uploaded_file is not None:
         if st.sidebar.button("向量化并入库"):
             try:
-                # 1. 尝试用 UTF-8 读取
                 text_content = uploaded_file.read().decode("utf-8")
             except UnicodeDecodeError:
-                # 2. 失败则尝试 GBK（兼容大多数中文 Windows 文件）
                 uploaded_file.seek(0)
                 try:
                     text_content = uploaded_file.read().decode("gbk")
@@ -210,10 +212,10 @@ with st.sidebar:
                     st.sidebar.error(f"读取文件失败，请确保是纯文本txt文件。错误：{e}")
                     st.stop()
             
-            # 3. 智能切分（针对你上传的复杂表格文档，调整了切分参数）
+            # 针对复杂表格文档，调整了切分参数，增加重叠以减少语义割裂
             text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=350,      # 每块约350字
-                chunk_overlap=80,    # 重叠80字，保持语义连贯
+                chunk_size=350,      
+                chunk_overlap=80,    
                 separators=["\n\n", "\n", "。", "！", "？", "，", " ", ""]
             )
             new_docs = [Document(page_content=chunk) for chunk in text_splitter.split_text(text_content)]
