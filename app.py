@@ -12,6 +12,7 @@ from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 if "HF_TOKEN" in st.secrets:
     os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
@@ -22,13 +23,24 @@ if "HF_TOKEN" in st.secrets:
 st.set_page_config(page_title="我的第一个AI Agent", layout="wide")
 st.title("🤖 我的专属企业助手")
 
-# ================= 2. 读取安全密钥 =================
-# 强烈建议本地也创建 .streamlit/secrets.toml 文件来保存密钥
-# 本地文件内容示例：
-# QWEATHER_KEY = "xxx"
-# QWEATHER_HOST = "xxx"
-# LLM_API_KEY = "sk-xxx"
-# LLM_BASE_URL = "https://api.agnes-ai.cn/v1"
+st.sidebar.header("📁 知识库管理")
+uploaded_file = st.sidebar.file_uploader("上传公司文档 (TXT)", type=["txt"])
+
+if uploaded_file is not None:
+    if st.sidebar.button("向量化并入库"):
+        text_content = uploaded_file.read().decode("utf-8")
+        
+        # 把长文档切分成小块（非常重要，模型一次吃不下一整本书）
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=200,      # 每块大约200字
+            chunk_overlap=50,    # 块与块之间有50字的重复，保证语义连贯
+            separators=["\n\n", "\n", "。", "！", "？", "，", " "]
+        )
+        new_docs = [Document(page_content=chunk) for chunk in text_splitter.split_text(text_content)]
+        
+        with st.spinner("正在把新文档写入向量库..."):
+            vectorstore.add_documents(new_docs)
+            st.sidebar.success(f"成功写入 {len(new_docs)} 个文本片段！现在可以提问了！")
 
 try:
     QWEATHER_KEY = st.secrets["QWEATHER_KEY"]
