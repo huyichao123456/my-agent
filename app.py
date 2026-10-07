@@ -185,13 +185,28 @@ with st.sidebar:
 
     if uploaded_file is not None:
         if st.sidebar.button("向量化并入库"):
-            text_content = uploaded_file.read().decode("utf-8")
-            # 切分成段落
+            try:
+                # 尝试用 UTF-8 解码
+                text_content = uploaded_file.read().decode("utf-8")
+            except UnicodeDecodeError:
+                # 如果失败，尝试用 GBK（兼容大多数中文 Windows 文件）
+                uploaded_file.seek(0)
+                try:
+                    text_content = uploaded_file.read().decode("gbk")
+                except Exception as e:
+                    st.sidebar.error(f"读取文件失败，请确保是纯文本txt文件。错误：{e}")
+                    st.stop()
+            
+            # 切分成段落（过滤空行）
             new_docs = [Document(page_content=line) for line in text_content.split('\n') if line.strip()]
             
+            if not new_docs:
+                st.sidebar.warning("文件内容为空，没有可以入库的文本！")
+                st.stop()
+
             with st.spinner("正在把新文档写入向量库..."):
                 vectorstore.add_documents(new_docs)
-                st.sidebar.success("写入成功！现在可以提问了！")
+                st.sidebar.success(f"成功写入 {len(new_docs)} 个片段！现在可以提问了！")
                 st.rerun()
 
     st.header("设置")
