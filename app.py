@@ -47,7 +47,7 @@ def load_vector_store():
     return vectorstore
 
 vectorstore = load_vector_store()
-retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
+retriever = vectorstore.as_retriever(search_kwargs={"k": 3}) # 稍微提高检索数量，便于从上传的长文档中找答案
 
 # ================= 3. 初始化大模型 =================
 llm = ChatOpenAI(
@@ -87,7 +87,7 @@ def get_current_time() -> str:
 
 @tool
 def search_knowledge(query: str) -> str:
-    """当用户询问公司内部制度、考勤、薪资、休假等问题时，使用此工具检索内部知识库。"""
+    """当用户询问公司内部制度、考勤、薪资、休假，或者询问“我上传的文件”时，使用此工具检索内部知识库。"""
     results = retriever.invoke(query)
     if results:
         return "找到以下相关信息：\n" + "\n".join([doc.page_content for doc in results])
@@ -97,7 +97,7 @@ def search_knowledge(query: str) -> str:
 
 # 5.1 构造子智能体的提示词
 hr_prompt = ChatPromptTemplate.from_messages([
-    ("system", "你是一个严谨的HR专员。请根据工具返回的知识库结果回答问题，绝对不许编造。"),
+    ("system", "你是一个严谨的HR专员。请根据工具返回的知识库结果回答问题，绝对不许编造。如果检索结果与问题无关，请如实告知。"),
     ("human", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
 ])
@@ -118,7 +118,7 @@ weather_executor = AgentExecutor(agent=weather_agent, tools=[get_weather], verbo
 # 5.3 将子 Agent 包装成“总管家”可以调用的“工具”
 @tool
 def ask_hr_expert(query: str) -> str:
-    """当用户询问公司制度、薪资、考勤、年假、报销等内部政策时，调用此工具。"""
+    """当用户询问公司制度、薪资、考勤、年假、报销，或者提问关于“我上传的文件”、“知识库”等问题时，调用此工具。"""
     print(f"   [总管家正在呼叫HR专员，参数：{query}]")
     return hr_executor.invoke({"input": query})["output"]
 
@@ -134,9 +134,9 @@ tools = [ask_hr_expert, ask_weather_expert]
 # ================= 6. 构建总管家 Agent =================
 prompt = ChatPromptTemplate.from_messages([
     ("system", """你是一个公司的总管家。你的任务是分析用户的问题，并决定调用哪个专员来解决问题。
-    如果涉及公司内部制度，调用 ask_hr_expert。
+    如果涉及公司内部制度、考勤、薪资、休假，或者用户询问关于“我上传的文件”、“知识库”等内容，一律调用 ask_hr_expert。
     如果涉及天气，调用 ask_weather_expert。
-    如果涉及时间，你可以直接回答或者让专员回答（目前时间工具未挂载给专员，你可以自己推算或礼貌告知无法查询）。
+    如果涉及时间，你可以直接回答或者礼貌告知无法查询。
     
     ⚠️ 极其重要的规则：
     1. 同一个专员，在一次回复中只能调用一次！绝对不允许为了同样的问题重复呼叫同一个专员！
@@ -178,7 +178,7 @@ history = get_session_history("any")
 for msg in history.messages:
     st.chat_message("human" if msg.type == "human" else "ai").write(msg.content)
 
-# 8.2 侧边栏：知识库管理（只保留这一处！）
+# 8.2 侧边栏：知识库管理
 with st.sidebar:
     st.header("📁 知识库管理")
     uploaded_file = st.sidebar.file_uploader("上传你的公司文档 (TXT)", type=["txt"])
@@ -186,10 +186,10 @@ with st.sidebar:
     if uploaded_file is not None:
         if st.sidebar.button("向量化并入库"):
             try:
-                # 尝试用 UTF-8 解码
+                # 1. 尝试用 UTF-8 读取
                 text_content = uploaded_file.read().decode("utf-8")
             except UnicodeDecodeError:
-                # 如果失败，尝试用 GBK（兼容大多数中文 Windows 文件）
+                # 2. 失败则尝试 GBK
                 uploaded_file.seek(0)
                 try:
                     text_content = uploaded_file.read().decode("gbk")
@@ -197,8 +197,13 @@ with st.sidebar:
                     st.sidebar.error(f"读取文件失败，请确保是纯文本txt文件。错误：{e}")
                     st.stop()
             
-            # 切分成段落（过滤空行）
-            new_docs = [Document(page_content=line) for line in text_content.split('\n') if line.strip()]
+            # 3. 使用 RecursiveCharacterTextSplitter 智能切分（替换原来的简单按行切分）
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=400,      # 每块约400字
+                chunk_overlap=50,    # 重叠50字，保持语义连贯
+                separators=["\n\n", "\n", "。", "！", "？", "，", " ", ""]
+            )
+            new_docs = [Document(page_content=chunk) for chunk in text_splitter.split_text(text_content)]
             
             if not new_docs:
                 st.sidebar.warning("文件内容为空，没有可以入库的文本！")
