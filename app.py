@@ -2,6 +2,7 @@ import streamlit as st
 import datetime
 import requests
 import time
+import os
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -11,6 +12,11 @@ from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
+
+if "HF_TOKEN" in st.secrets:
+    os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
+    # 顺便加上镜像加速，确保云端下载模型飞快
+    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 # ================= 1. 页面基础设置 =================
 st.set_page_config(page_title="我的第一个AI Agent", layout="wide")
