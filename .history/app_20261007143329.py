@@ -18,8 +18,6 @@ from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-import pypdf
-from langchain_community.tools import DuckDuckGoSearchRun
 
 # ================= 0. 页面基础设置 =================
 st.set_page_config(page_title="我的第一个AI Agent", layout="wide")
@@ -62,6 +60,7 @@ retriever = vectorstore.as_retriever(
 )
 
 # ================= 3. 初始化大模型 =================
+# ⚠️ 强烈建议换成 DeepSeek：model="deepseek-chat", base_url="https://api.deepseek.com"
 llm = ChatOpenAI(
     api_key=LLM_API_KEY,
     base_url=LLM_BASE_URL, 
@@ -106,27 +105,15 @@ def search_knowledge(query: str) -> str:
         return "找到以下相关信息：\n---\n" + "\n---\n".join(content_list)
     return "抱歉，本地知识库中没有找到相关信息。"
 
-# 🚀 新增：网络搜索工具
-search_tool = DuckDuckGoSearchRun()
-
-@tool
-def web_search(query: str) -> str:
-    """当用户询问最新新闻、实时事件、当前日期之后发生的事情，或者知识库中没有的通用外部知识时，使用此工具进行网络搜索。"""
-    print(f"   [总管家正在呼叫搜索专员，参数：{query}]")
-    try:
-        return search_tool.run(query)
-    except Exception as e:
-        return f"网络搜索失败，错误信息：{e}"
-
 # ================= 5. 多智能体定义 (Agent as a Tool) =================
 
-# 5.1 构造子智能体的提示词
+# 5.1 构造子智能体的提示词（强化“照抄原文”，避免大模型自作聪明）
 hr_prompt = ChatPromptTemplate.from_messages([
     ("system", """你是一个严谨的业务及HR专员。你的唯一任务是从工具返回的知识库片段中提取答案。
     ⚠️ 铁律：
     1. 绝对不许编造！绝对不许使用你自己的通用知识去“推测”、“补充”或“提建议”！
-    2. 如果知识库片段里找到了相关内容，请一字不差地引用原文来回答。
-    3. 如果知识库片段里确实没有相关词句，请直接回答：“抱歉，知识库中未收录该信息。”
+    2. 如果知识库片段里找到了相关内容，请一字不差地引用原文来回答（比如直接输出：“最科技最安全的全球纯电平台，远超百倍国标安全要求”）。
+    3. 如果知识库片段里确实没有相关词句，请直接回答：“抱歉，知识库中未收录该信息。”严禁给出“通用逻辑”或“行业常规”！
     """),
     ("human", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -159,7 +146,7 @@ def ask_weather_expert(query: str) -> str:
     return weather_executor.invoke({"input": query})["output"]
 
 # 5.4 总管家的工具列表
-tools = [ask_hr_expert, ask_weather_expert, web_search]
+tools = [ask_hr_expert, ask_weather_expert]
 
 # ================= 6. 构建总管家 Agent =================
 prompt = ChatPromptTemplate.from_messages([
@@ -168,8 +155,8 @@ prompt = ChatPromptTemplate.from_messages([
     ⚠️ 规则：
     1. 如果涉及公司内部制度、业务规范、表格数据、具体车型信息、考核标准，或者用户询问“我上传的文件”、“知识库”等具体业务内容，**必须强制调用 `ask_hr_expert` 进行检索**。
     2. 如果涉及天气，调用 `ask_weather_expert`。
-    3. 如果涉及最新新闻、实时事件、当前日期之后发生的事情，或者知识库中没有的外部通用知识，调用 `web_search`。
-    4. 调用 `ask_hr_expert` 时，请**直接传入用户的原始提问**，不要随意改写或删减关键词。
+    3. 遇到不确定或听不懂的问题，**宁可调用 ask_hr_expert 检索，绝对不允许直接回复“问题模糊”或“无法读取文件”！**
+    4. 调用 `ask_hr_expert` 时，请**直接传入用户的原始提问**，不要随意改写或删减关键词，以免丢失“开口必说话术”这种核心检索词！
     5. 同一个专员，在一次回复中只能调用一次！
 
     最后，根据专员检索到的实际内容，平滑、礼貌地总结给用户。"""),
@@ -201,45 +188,31 @@ agent_with_memory = RunnableWithMessageHistory(
 if "initialized" not in st.session_state:
     history = get_session_history("any")
     if len(history.messages) == 0:
-        history.add_ai_message("你好！我是你的公司助手。你可以问我天气、时间、最新新闻，或者上传文件后向我提问业务知识。")
+        history.add_ai_message("你好！我是你的公司助手。你可以问我天气、时间，或者上传文件后向我提问业务知识。")
     st.session_state.initialized = True
 
 history = get_session_history("any")
 for msg in history.messages:
     st.chat_message("human" if msg.type == "human" else "ai").write(msg.content)
 
-# 8.2 侧边栏：知识库管理（支持 TXT 和 PDF）
+# 8.2 侧边栏：知识库管理
 with st.sidebar:
     st.header("📁 知识库管理")
-    uploaded_file = st.sidebar.file_uploader("上传你的公司文档 (TXT 或 PDF)", type=["txt", "pdf"])
+    uploaded_file = st.sidebar.file_uploader("上传你的公司文档 (TXT)", type=["txt"])
 
     if uploaded_file is not None:
         if st.sidebar.button("向量化并入库"):
-            text_content = ""
-            
-            # 判断文件类型
-            if uploaded_file.name.endswith(".pdf"):
+            try:
+                text_content = uploaded_file.read().decode("utf-8")
+            except UnicodeDecodeError:
+                uploaded_file.seek(0)
                 try:
-                    pdf_reader = pypdf.PdfReader(uploaded_file)
-                    for page in pdf_reader.pages:
-                        extracted = page.extract_text()
-                        if extracted:
-                            text_content += extracted + "\n"
+                    text_content = uploaded_file.read().decode("gbk")
                 except Exception as e:
-                    st.sidebar.error(f"PDF 读取失败：{e}")
+                    st.sidebar.error(f"读取文件失败，请确保是纯文本txt文件。错误：{e}")
                     st.stop()
-            else: # 如果是 TXT
-                try:
-                    text_content = uploaded_file.read().decode("utf-8")
-                except UnicodeDecodeError:
-                    uploaded_file.seek(0)
-                    try:
-                        text_content = uploaded_file.read().decode("gbk")
-                    except Exception as e:
-                        st.sidebar.error(f"读取文件失败，错误：{e}")
-                        st.stop()
             
-            # 智能切分
+            # 针对复杂表格文档，调整了切分参数，增加重叠以减少语义割裂
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=350,      
                 chunk_overlap=80,    
