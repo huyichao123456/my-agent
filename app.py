@@ -187,6 +187,33 @@ history = get_session_history("any")
 for msg in history.messages:
     st.chat_message("human" if msg.type == "human" else "ai").write(msg.content)
 
+st.sidebar.header("📁 知识库管理")
+uploaded_file = st.sidebar.file_uploader("上传你的公司文档 (TXT)", type=["txt"])
+
+if uploaded_file is not None:
+    if st.sidebar.button("向量化并入库"):
+        # 读取上传的文件
+        text_content = uploaded_file.read().decode("utf-8")
+        # 切分成段落
+        new_docs = [Document(page_content=line) for line in text_content.split('\n') if line.strip()]
+        
+        with st.spinner("正在把新文档写入向量库..."):
+            # 把你的全局 vectorstore 写进去（注意：这里要在全局声明变量）
+            vectorstore.add_documents(new_docs)
+            st.sidebar.success("写入成功！现在可以提问了！")
+            st.rerun()
+
+# 在网页顶部 st.title 附近加
+with st.sidebar:
+    st.header("设置")
+    if st.button("🧹 清除聊天记录"):
+        # 直接删除数据库文件（本地）或重置 session（云端）
+        import os
+        if os.path.exists("chat_history.db"):
+            os.remove("chat_history.db")
+        st.session_state.initialized = False
+        st.rerun()
+
 # 输入框与响应逻辑
 if prompt_text := st.chat_input("请输入你的问题..."):
     st.chat_message("human").write(prompt_text)
