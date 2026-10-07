@@ -1,0 +1,17 @@
+# 忽略虚拟环境和缓存
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 忽略你的敏感数据（绝不能传到 GitHub！）
+chat_history.db
+chroma_db/
+models/
+.env
+
+# 忽略其他无关文件
+.DS_Store
+.vscode/
+
+.streamlit/
